@@ -175,6 +175,13 @@ typedef struct pileup {
   float* cov;     // array of pileup values
 } Pileup;
 
+// Dudek - special pileup used to store p-value sums and degrees of freedom for chi square test
+typedef struct pileupPSum {
+  uint32_t* end;  // array of end coordinates
+  float* cov;     // array of pileup values (pval sums)
+  uint32_t* df;    // array of dfs
+} PileupPSum;
+
 typedef struct diff {
   uint8_t* frac;  // fractions of a count (8-bit encoded)
   int16_t* cov;   // int counts
@@ -198,6 +205,10 @@ typedef struct chrom {
   uint32_t* pvalLen;  // lengths of "pileup" arrays for p-values
   uint8_t sample;     // count of samples with p-value arrays saved
   Pileup* qval;       // "pileup" arrays for q-values
+  Pileup* pvals;        // DUDEK - "pileup" array for p-values (one sample at a time)
+  uint32_t pvalsLen;    // DUDEK - length of pileup array for p-values (one sample at a time)
+  PileupPSum* pvalSum;  // DUDEK - "pileup" array for running sum of p-values
+  uint32_t pvalSumLen;  // DUDEK - length of pileup array for pvalSum and df (these should always have the same length)
 } Chrom;
 
 typedef struct aln {

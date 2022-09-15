@@ -549,6 +549,22 @@ double pchisq(double x, int df) {
 
 /*** Combine p-values from multiple replicates ***/
 
+// DUDEK - wrapper for pchisq()
+/* float sumPval()
+ * Turn a p-value sum into a single p-value
+ *   using Fisher's method.
+ */
+double sumPval(double sum, int df) {
+  if (df == 0)
+    return SKIP;
+  if (df == 2 || ! sum)
+    return (float) sum;
+
+  // calculate p-value using chi-squared dist.
+  double p = pchisq(2.0 * sum / M_LOG10E, df); // DUDEK - Convert from -log10(p) --> -ln(p)
+  return p > FLT_MAX ? FLT_MAX : (float) p;
+}
+
 /* float multPval()
  * Combine multiple p-values into a single net p-value
  *   using Fisher's method.
@@ -958,6 +974,7 @@ void updatePeak(int64_t* peakStart, int64_t* peakEnd,
   }
 }
 
+
 /* int callPeaks()
  * Call peaks, using minAUC, maxGap, and minLen parameters.
  *   Produce output on the fly. Log pileups, p- and
@@ -1067,11 +1084,47 @@ void findPeaks(File out, File log, bool logOpt, bool gzOut,
     float minPQval, bool qvalOpt, int minLen, int maxGap,
     float minAUC, bool peaksOpt, uint64_t genomeLen,
     bool verbose) {
-
+  
   // calculate combined p-values for multiple replicates
-  if (*sample > 1) {
-    combinePval(chrom, chromLen, *sample);
-    (*sample)++;
+  // <OLD>
+  // if (*sample > 1) {
+  //   combinePval(chrom, chromLen, *sample);
+  //   (*sample)++;
+  // }
+  // </OLD>
+
+  for (int i = 0; i < chromLen; i++) {
+    Chrom* chr = chrom + i;
+    if (chr->skip)
+      continue;
+
+    // DUDEK - allocate space for chisqr p-values
+    uint32_t num = chr->pvalSumLen;
+    chr->pvals->end = (uint32_t*) memrealloc(chr->pvals->end, num * sizeof(uint32_t));
+    chr->pvals->cov = (float*) memrealloc(chr->pvals->cov, num * sizeof(float));
+    for (int m = 0; m < num; m++) {
+      chr->pvals->end[m] = chr->pvalSum->end[m];
+      chr->pvals->cov[m] = sumPval(chr->pvalSum->cov[m], chr->pvalSum->df[m]);
+    }
+    chr->pvalsLen = num;
+
+    // DUDEK - in order for the program to have the same behavior from now on,
+    // we insert the chr->pvals Pileup into the chr->pval[1] Pileup.
+    // This may change later
+    // n = 0 is reserved for logging so we can't use that
+    *sample = 2; // DUDEK: tells functions that n = 1, so chr->pval[1] is read
+    chr->sample = 2; // Tells program how many pileups to free - we now only have 2 pileups stored
+    chr->pval = (Pileup**) memrealloc(chr->pval, 2 * sizeof(Pileup*));
+    chr->pval[0] = NULL;
+    chr->pval[1] = (Pileup*) memalloc(sizeof(Pileup));
+    chr->pval[1]->end = (uint32_t*) memalloc(num * sizeof(uint32_t));
+    chr->pval[1]->cov = (float*) memalloc(num * sizeof(float));
+    chr->pvalLen = (uint32_t*) memrealloc(chr->pvalLen, 2 * sizeof(uint32_t));
+    chr->pvalLen[1] = num;
+    for (int m = 0; m < num; m++) {
+      chr->pval[1]->end[m] = chr->pvals->end[m];
+      chr->pval[1]->cov[m] = chr->pvals->cov[m];
+    }
   }
 
   // calculate genome length (only chroms that are not
@@ -1081,7 +1134,7 @@ void findPeaks(File out, File log, bool logOpt, bool gzOut,
     genomeOpt = true;
     for (int i = 0; i < chromLen; i++) {
       Chrom* chr = chrom + i;
-      if (! chr->skip && chr->pval[*sample - 1] != NULL) {
+      if (! chr->skip && chr->pval[*sample - 1] != NULL) { 
         genomeLen += chr->len;
         for (int j = 0; j < chr->bedLen; j += 2)
           genomeLen -= chr->bed[j+1] - chr->bed[j];
@@ -1663,6 +1716,27 @@ uint32_t countIntervals(Chrom* chr) {
   return num;
 }
 
+// DUDEK
+/* uint32_t countIntervals3()
+ * Count the number of pileup intervals to create
+ *   for a sum of pvals and pvalSum
+ */
+uint32_t countIntervals3(Chrom* chr) {
+  uint32_t num = 0;
+  uint32_t k = 0;
+  for (uint32_t j = 0; j < chr->pvalSumLen; j++) {
+    while (k < chr->pvalsLen
+        && chr->pvals->end[k] < chr->pvalSum->end[j]) {
+      num++;
+      k++;
+    }
+    if (chr->pvals->end[k] == chr->pvalSum->end[j])
+      k++;
+    num++;
+  }
+  return num;
+}
+
 /* void printPileHeader()
  * Print header of the bedgraph-ish pileup log file.
  */
@@ -1722,36 +1796,87 @@ void savePval(Chrom* chrom, int chromLen, int n,
 
     // fill in missing pval arrays from previous samples
     if (chr->sample < n) {
-      chr->pval = (Pileup**) memrealloc(chr->pval,
-        n * sizeof(Pileup*));
-      for (int j = n - 1; j >= chr->sample; j--)
-        chr->pval[j] = NULL;
+      //<OLD>
+      // chr->pval = (Pileup**) memrealloc(chr->pval,
+      //   n * sizeof(Pileup*));
+      // for (int j = n - 1; j >= chr->sample; j--)
+      //   chr->pval[j] = NULL;
+      //</OLD>
       chr->sample = n;
     }
 
     // p-values not to be saved: append a NULL
     if (! chr->save) {
-      chr->pval = (Pileup**) memrealloc(chr->pval,
-        (n + 1) * sizeof(Pileup*));
-      chr->pval[n] = NULL;
+      //<OLD>
+      // chr->pval = (Pileup**) memrealloc(chr->pval,
+      //   (n + 1) * sizeof(Pileup*));
+      // chr->pval[n] = NULL;
+      //</OLD>
       chr->sample++;
       continue;
     }
 
     // create 'pileup' arrays for p-values
     uint32_t num = countIntervals(chr);
-    chr->pval = (Pileup**) memrealloc(chr->pval,
-      (n + 1) * sizeof(Pileup*));
-    chr->pval[n] = (Pileup*) memalloc(sizeof(Pileup));
-    chr->pval[n]->end = (uint32_t*) memalloc(num * sizeof(uint32_t));
-    chr->pval[n]->cov = (float*) memalloc(num * sizeof(float));
-    chr->pvalLen = (uint32_t*) memrealloc(chr->pvalLen,
-      (n + 1) * sizeof(uint32_t));
-    chr->pvalLen[n] = num;
+
+    // <OLD>
+    // chr->pval = (Pileup**) memrealloc(chr->pval,
+    //   (n + 1) * sizeof(Pileup*));
+    // chr->pval[n] = (Pileup*) memalloc(sizeof(Pileup));
+    // chr->pval[n]->end = (uint32_t*) memalloc(num * sizeof(uint32_t));
+    // chr->pval[n]->cov = (float*) memalloc(num * sizeof(float));
+    // chr->pvalLen = (uint32_t*) memrealloc(chr->pvalLen,
+    //   (n + 1) * sizeof(uint32_t));
+    // chr->pvalLen[n] = num;
+    // </OLD>
+
     chr->sample++;
 
+    // DUDEK - Allocate pvals array
+    if (chr->pvals == NULL) {
+      chr->pvals = (Pileup*) memalloc(sizeof(Pileup));
+      chr->pvals->end = (uint32_t*) memalloc(num * sizeof(uint32_t));
+      chr->pvals->cov = (float*) memalloc(num * sizeof(float));
+    } else {
+      chr->pvals->end = (uint32_t*) memrealloc(chr->pvals->end, num * sizeof(uint32_t));
+      chr->pvals->cov = (float*) memrealloc(chr->pvals->cov, num * sizeof(float));
+    }
+    chr->pvalsLen = num;
+
+    // <OLD>
     // save p-values to arrays
-    Pileup* p = chr->pval[n];
+    // Pileup* p = chr->pval[n];
+    // uint32_t start = 0;    // start of interval
+    // uint32_t j = 0, k = 0;
+    // for (uint32_t m = 0; m < num; m++) {
+    //   if (chr->ctrl->end[k] < chr->expt->end[j]) {
+    //     p->end[m] = chr->ctrl->end[k];
+    //     p->cov[m] = calcPval(chr->expt->cov[j],
+    //       chr->ctrl->cov[k]);
+    //     if (pileOpt)
+    //       printPile(pile, chr->name, start, p->end[m],
+    //         chr->expt->cov[j], chr->ctrl->cov[k],
+    //         p->cov[m], gzOut);
+    //     k++;
+    //   } else {
+    //     p->end[m] = chr->expt->end[j];
+    //     p->cov[m] = calcPval(chr->expt->cov[j],
+    //       chr->ctrl->cov[k]);
+    //     if (pileOpt)
+    //       printPile(pile, chr->name, start, p->end[m],
+    //         chr->expt->cov[j], chr->ctrl->cov[k],
+    //         p->cov[m], gzOut);
+    //     if (chr->ctrl->end[k] == chr->expt->end[j])
+    //       k++;
+    //     j++;
+    //   }
+    //   start = p->end[m];
+    // }
+    // </OLD>
+
+
+    // DUDEK - save pvals
+    Pileup* p = chr->pvals;
     uint32_t start = 0;    // start of interval
     uint32_t j = 0, k = 0;
     for (uint32_t m = 0; m < num; m++) {
@@ -1779,6 +1904,71 @@ void savePval(Chrom* chrom, int chromLen, int n,
       start = p->end[m];
     }
 
+    /* DUDEK - add pvals Pileup to pvalsSum Pileup and increase df by 2 */
+
+    if (chr->pvalSum == NULL) {
+      // Initialize pvalSum with all 0s
+      chr->pvalSum = (PileupPSum*) memalloc(sizeof(PileupPSum));
+      chr->pvalSum->end = (uint32_t*) memalloc(1 * sizeof(uint32_t));
+      chr->pvalSum->cov = (float*) memalloc(1 * sizeof(float));
+      chr->pvalSum->df = (uint32_t*) memalloc(1 * sizeof(uint32_t));
+
+      chr->pvalSum->end[0] = chr->len;
+      chr->pvalSum->cov[0] = 0.0;
+      chr->pvalSum->df[0] = 0;
+
+      chr->pvalSumLen = 1;
+    } 
+
+    // DUDEK - Calculate required length for new sum pileup and allocate pvalSumTemp
+    uint32_t newSumLen = countIntervals3(chr);
+
+    PileupPSum* pvalSumTemp = (PileupPSum*) memalloc(sizeof(PileupPSum));
+    pvalSumTemp->end = (uint32_t*) memalloc(newSumLen * sizeof(uint32_t));
+    pvalSumTemp->cov = (float*) memalloc(newSumLen * sizeof(float));
+    pvalSumTemp->df = (uint32_t*) memalloc(newSumLen * sizeof(uint32_t));
+
+    // DUDEK DEBUG
+    // printf("chr->pvalsLen = %d\n", chr->pvalsLen);
+    // fprintf(stderr, "chr = %s, sample = %d, newSumLen = %d\n", chr->name, n, newSumLen);
+
+    // DUDEK add pvals to pvalSum, store in pvalSumTemp
+    start = 0;    // start of interval
+    j = 0, k = 0;
+    for (uint32_t m = 0; m < newSumLen; m++) {
+      if (chr->pvals->end[k] < chr->pvalSum->end[j]) {
+        pvalSumTemp->end[m] = chr->pvals->end[k];
+        if (chr->pvals->cov[k] == SKIP) {
+          pvalSumTemp->df[m] = chr->pvalSum->df[j];
+          pvalSumTemp->cov[m] = chr->pvalSum->cov[j];
+        } else {
+          pvalSumTemp->cov[m] = chr->pvalSum->cov[j] + chr->pvals->cov[k];
+          pvalSumTemp->df[m] = chr->pvalSum->df[j] + 2;
+        }
+        k++;
+      } else {
+        pvalSumTemp->end[m] = chr->pvalSum->end[j];
+        if (chr->pvals->cov[k] == SKIP) {
+          pvalSumTemp->df[m] = chr->pvalSum->df[j];
+          pvalSumTemp->cov[m] = chr->pvalSum->cov[j];
+        } else {
+          pvalSumTemp->cov[m] = chr->pvalSum->cov[j] + chr->pvals->cov[k];
+          pvalSumTemp->df[m] = chr->pvalSum->df[j] + 2;
+        }
+        if (chr->pvals->end[k] == chr->pvalSum->end[j])
+          k++;
+        j++;
+      }
+      start = pvalSumTemp->end[m];
+    }
+
+    // DUDEK replace pvalSum with pvalSumTemp
+    free(chr->pvalSum->end);
+    free(chr->pvalSum->cov);
+    free(chr->pvalSum->df);
+    free(chr->pvalSum);
+    chr->pvalSum = pvalSumTemp;
+    chr->pvalSumLen = newSumLen;
   }
 }
 
@@ -4247,6 +4437,12 @@ int saveChrom(char* name, uint32_t len, int* chromLen,
   c->sample = 0;
   c->qval = NULL;
 
+  // DUDEK
+  c->pvals = NULL;
+  c->pvalsLen = 0;
+  c->pvalSum = NULL;
+  c->pvalSumLen = 0;
+
   // determine if there are regions to be skipped
   c->bed = NULL;
   c->bedLen = 0;
@@ -5640,7 +5836,8 @@ void runProgram(char* inFile, char* ctrlFile, char* outFile,
         free(chr->qval->cov);
         free(chr->qval);
       }
-      for (int j = 0; j < sample; j++) {
+      // DUDEK change sample to chr->sample
+      for (int j = 0; j < chr->sample; j++) {
         if (chr->pval[j]) {
           free(chr->pval[j]->end);
           free(chr->pval[j]->cov);
@@ -5653,6 +5850,19 @@ void runProgram(char* inFile, char* ctrlFile, char* outFile,
       free(chr->ctrl->cov);
       free(chr->expt->end);
       free(chr->expt->cov);
+
+      // DUDEK free
+      if (chr->pvals) {
+        free(chr->pvals->end);
+        free(chr->pvals->cov);
+        free(chr->pvals);
+      }
+      if (chr->pvalSum) {
+        free(chr->pvalSum->end);
+        free(chr->pvalSum->cov);
+        free(chr->pvalSum->df);
+        free(chr->pvalSum);
+      }
     }
     free(chr->ctrl);
     free(chr->expt);
