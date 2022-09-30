@@ -536,13 +536,14 @@ double pgamma(double x, double alph) {
 /* double pchisq()
  * Calculate a p-value for a chi-squared distribution
  *   with observation 'x' and 'df' degrees of freedom.
- *   'df' must be an even integer in [4, 400].
+ *   'df' must be an even integer in [4, Inf].
  * Adapted from pchisq.c and pgamma.c in R-3.5.0,
  *   with lower_tail=FALSE and log_p=TRUE.
  * Return value is -log10(p).
  */
 double pchisq(double x, int df) {
-  if (df < 4 || df > 400 || df / 2.0 != (int) (df / 2.0))
+  // if (df < 4 || df > 400 || df / 2.0 != (int) (df / 2.0))
+  if (df < 2 || df / 2.0 != (int) (df / 2.0)) // DUDEK - remove max x to accomodate large sample sizes
     exit(error(errMsg[ERRDF], ERRISSUE));
   return -pgamma(x / 2.0, df / 2.0) / M_LN10;
 }
@@ -6027,6 +6028,12 @@ void getArgs(int argc, char** argv) {
  * Main.
  */
 int main(int argc, char* argv[]) {
+  // DUDEK Testing
+  // for (double x = 10000; x < 40000; x += 1000) {
+  //   double log_p = pchisq(x, 28000);
+  //   printf("pchisq(%.0f, df = 28000, lower.tail = F, log.p = T) = %7.6e\n", x, log_p);
+  // }
+
   getArgs(argc, argv);
   return EXIT_SUCCESS;
 }
